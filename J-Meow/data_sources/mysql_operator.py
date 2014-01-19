@@ -144,7 +144,7 @@ if __name__ == '__main__':
         # insertor.add_policy(device_ip='10.1.2.3', policy_name='test1', src_ip='10.2', dst_ip='1212', from_zone='untrust', to_zone='trust', action='permit')
         result = insertor.search_policy_by_ip(device_ip='10.1.66.22', src_ip=netaddr.IPSet(['10.0.0.0/8', '12.0.0.0/8', '13.0.0.0/8']), dst_ip=None, from_zone='untrust', to_zone='trust')
         print(result)
-
+        #test
         application = {'tcp':{'src-port':['any'], 'dst-port':[5666, 12489]}}
         # application = {'tcp':{'src-port':['any'], 'dst-port':[5666, 12489]}, 'udp':{'src-port':['any'], 'dst-port':[16102, 16103, 16104, 16105]}}
         # application = {'tcp':{'src-port':['any'], 'dst-port':[5666, 12489]}, 'udp':{'src-port':['any'], 'dst-port':[16102, 16103, 16104, 16105]}, 'icmp':{'src-port':['any'], 'dst-port':['any']}}
