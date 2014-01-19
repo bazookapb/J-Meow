@@ -81,7 +81,6 @@ class telnet_connection(object):
                 show_flag = True
                 cmd += ' | display xml | no-more'
             self.__con.write( bytes("%s\r" %cmd, encoding = 'utf8'))
-            
             while(1):
                 output = str(self.__con.read_until(bytes(self.prompt[-5:], encoding = 'utf8'), self.timeout), "utf8")
 

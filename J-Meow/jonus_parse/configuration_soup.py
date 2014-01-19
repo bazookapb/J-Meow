@@ -8,6 +8,7 @@ import re
 
 from bs4 import BeautifulSoup
 from netaddr.ip.sets import IPSet
+import strategies
 
 
 def port_cal(ports):
@@ -43,12 +44,9 @@ class ConfigurationSoup(object):
     """
 
 
-    def __init__(self, session=None):
-        """
-        session is a connection to get configuration
-        @param session:
-        """
-        self.__session = session
+    def __init__(self):
+        self.__configuration_xml = None
+        self.__default_app_xml = None
 
     def __extract_deny_policy(self, xml):
         """
@@ -77,12 +75,11 @@ class ConfigurationSoup(object):
 
         return new
 
-    def get_whole_conf(self, configuration=None):
+    def get_whole_conf(self, configuration):
         """
             To get the configuration from end-point via connection, you can use the 'configuration' input parameter for debug purpose.
         """
-        if configuration == None:
-            configuration = self.__session.commit('show configuration')
+
             # did not want a incompleted configuration
         if re.search(r'</rpc-reply>\s*$', configuration) == None:
             self.__configuration_xml = None
@@ -90,27 +87,16 @@ class ConfigurationSoup(object):
         self.__configuration_xml = BeautifulSoup(configuration)
         return configuration
 
-    def get_default_app(self):
+    def get_default_app(self, default_app_text):
         """
             To get the Junos application configuration from end-point via connection, you can use the 'configuration' input parameter for debug purpose.
         """
-        default_app_text = self.__session.commit('show configuration groups junos-defaults applications')
-
         # did not want a completed configuration
-        if re.search(r'</rpc-reply>\s*$', default_apps) == None:
-            self.__default_app_xml = None
-            return None
-        self.__default_app_xml = BeautifulSoup(default_app_text)
-        return default_app_text
-
-    def load_default_app(self, default_app_text):
-        # did not want an incompleted configuration
         if re.search(r'</rpc-reply>\s*$', default_app_text) == None:
             self.__default_app_xml = None
             return None
         self.__default_app_xml = BeautifulSoup(default_app_text)
         return default_app_text
-
 
     def merge_conf_with_default_app(self):
         """
@@ -184,11 +170,120 @@ class ConfigurationSoup(object):
         return applications_list
 
     @__check_config
+    def analyse_interfaces_IP(self):
+        """
+            To get all interface names with IPv4 address on it from the configuration xml
+            output: {interface_name : ip} dict
+        """
+        interface_with_ip_dict = {}
+
+        root = self.__configuration_xml.version
+        interfaces = root.find_next_sibling(name='interfaces')
+        for interface in interfaces.find_all(name='interface'):
+            if interface.address:
+                interface_name = interface.find('name').string
+                for unit in interface.find_all(name='unit'):
+                    subinterface = unit.find(name='name').string
+                    interface_with_ip_dict[interface_name + '.' + subinterface] = unit.address.find(name='name').string
+        logging.debug('The interface and ip map is ' + str(interface_with_ip_dict))
+        return interface_with_ip_dict
+
+    @__check_config
+    def analyse_interfaces_security_zone(self):
+        """
+            To get all security zone names with interface name within from the configuration xml
+            output: {interface_name : security zone} dict
+        """
+        interface_with_zone_dict = {}
+        for zone in self.__configuration_xml.zones.find_all(name='security-zone'):
+            for interfaces in zone.find_all(name='interfaces'):
+                for interface in interfaces.find_all(name='name'):
+                    interface_with_zone_dict[interface.string] = zone.find('name').string
+        logging.debug('The interface and security zone map is ' + str(interface_with_zone_dict))
+        return interface_with_zone_dict
+
+    @__check_config
+    def analyse_route_IP(self):
+        """
+            To get all static staticroute prefix with next-hop-ip within from the configuration xml
+            output: {prefix : next-hop-ip} dict
+        """
+        prefix_ip_dict = {}
+        for routing_option in self.__configuration_xml.find_all(name='routing-options'):
+            for route in routing_option.find_all(name='route'):
+                if re.match(r'(\d+.){3}.\d+', route.find(name='next-hop').string):
+                    prefix_ip_dict[route.find(name='name').string] = IPSet([route.find(name='next-hop').string])
+        logging.debug('The static route prefix and next-hop map is ' + str(prefix_ip_dict))
+        return prefix_ip_dict
+
+    @__check_config
+    def get_security_zone_relationship(self):
+        relationship = []
+        for policy in self.__configuration_xml.policies.children:
+            if policy != '\n':
+                src_zone = policy.find(name='from-zone-name').string
+                dst_zone = policy.find(name='to-zone-name').string
+                relationship.append((src_zone, dst_zone))
+        logging.debug('The security zones accessing relationship is ' + str(relationship))
+        return relationship
+
+    @__check_config
     def get_policy(self, policy, from_zone='untrust', to_zone='trust', ):
         '''
         Return all the policy xml arch.
         '''
         return self.__configuration_xml.policies.find(name = 'name', text = policy).parent
+
+    @__check_config
+    def analyse_policies_info(self, policies=[], from_zone='untrust', to_zome='trust', getters=[]):
+        """
+        Input: policy name list, from_zone and to_zone
+            This is a constructor class which run the getter.
+            Get the source and destination addresses related to a policy
+        Output: list(policy: {src_address:IPSet([]), dst_address:IPSet([]) })
+        """
+        def application_getter():
+            applications = policy_xml.find_all(name='application')
+            # tuple to store the application information.
+            app_tuple = []
+            app_tuple = self.__get_application_info(applications)
+            app_tuple = self.__summarize_application_info(app_tuple)
+            if policy in result_dict.keys():
+                result_dict[policy].update({'application':app_tuple})
+            else:
+                result_dict[policy] = {'application':app_tuple}
+            return result_dict
+
+        def address_getter():
+
+            src_addr = policy_xml.find_all(name='source-address')
+            dst_addr = policy_xml.find_all(name='destination-address')
+
+            addr_tuple = []
+            addr_tuple = self.__get_addr_info(src_addr, from_zone)
+            addr_tuple = self.__summarize_addr_info(addr_tuple)
+            if policy in result_dict.keys():
+                result_dict[policy].update({'src_address': addr_tuple})
+            else:
+                result_dict[policy] = {'src_address': addr_tuple}
+
+            addr_tuple = []
+            addr_tuple = self.__get_addr_info(dst_addr, to_zome)
+            result_dict[policy].update({'dst_address': self.__summarize_addr_info(addr_tuple)})
+            return result_dict
+
+        result_dict = {}
+        for policy in policies:
+            for policy_temp in self.__configuration_xml.policies.find_all(text=policy):
+                if policy_temp is None:
+                    logging.warn('No such a policy: ' + policy + 'from ' + from_zone + ' to ' + to_zome)
+                    continue
+                policy_xml = policy_temp.parent.parent  # Get the policy xml.
+                if policy_xml.parent.find('from-zone-name').text == from_zone and policy_xml.parent.find(
+                        'to-zone-name').text == to_zome:           # the exact policy we wanna find.
+                    for getter in getters:
+                        eval(getter+'()')
+        return result_dict
 
     @__check_config
     def analyse_policies_address(self, policies=[], from_zone='untrust', to_zome='trust'):
@@ -197,69 +292,55 @@ class ConfigurationSoup(object):
             Get the source and destination addresses related to a policy
         Output: list(policy: {src_address:IPSet([]), dst_address:IPSet([]) })
         """
-
-        def get_addr_info(addrs=[], zone_name='untrust'):
-            """
-            Input: Address names list
-            A recursive method to get address from address-set
-            Output: A generator which return addresses belong to a policy
-            """
-            for addr in addrs:
-                ip = addr.text
-                if ip == 'any':
-                    ip = '0.0.0.0/0'
-                    yield ip
-                else:
-                    try:
-                        security_zone = self.__configuration_xml.zones.find(name='name', text=zone_name).parent
-                        address_xml = security_zone.find(name='name', text=ip).parent
-                    except AttributeError as e:
-                        logging.warn("cannot find the address :" + ip)
-                        return None
-                    else:
-                        if address_xml.name == 'address':
-                            yield address_xml.find('ip-prefix').text
-                        elif address_xml.name == 'address-set':
-                            address_members = address_xml.find_all(name='address')
-                            member_list = []
-                            for member in address_members:
-                                member_list.append(member.find(name='name'))
-                            for address in get_addr_info(member_list, zone_name):
-                                yield address
-                        else:
-                            logging.warn(address_xml.name + 'is not an address/address set')
-
-        def summarize_addr_info(addr_tuple):
-            """
-            Use the netaddr.IPSet lib to do the clear dupilcated work.
-            """
-            result_list = IPSet([])
-            if addr_tuple is not None:
-                for addr in addr_tuple:
-                    result_list.add(addr)
-            return result_list
-
         result_dict = {}
         for policy in policies:
-            policy_temp = self.__configuration_xml.policies.find(text=policy)
-            if policy_temp is None:
-                logging.warn('No such a policy: ' + policy + 'from ' + from_zone + ' to ' + to_zome)
-                continue
-            policy_xml = policy_temp.parent.parent  # Get the policy xml.
-            if policy_xml.parent.find('from-zone-name').text == from_zone and policy_xml.parent.find(
-                    'to-zone-name').text == to_zome:
-                src_addr = policy_xml.find_all(name='source-address')
-                dst_addr = policy_xml.find_all(name='destination-address')
+            for policy_temp in self.__configuration_xml.policies.find_all(text=policy):
+                if policy_temp is None:
+                    logging.warn('No such a policy: ' + policy + 'from ' + from_zone + ' to ' + to_zome)
+                    continue
+                policy_xml = policy_temp.parent.parent  # Get the policy xml.
+                if policy_xml.parent.find('from-zone-name').text == from_zone and policy_xml.parent.find(
+                        'to-zone-name').text == to_zome:
+                    src_addr = policy_xml.find_all(name='source-address')
+                    dst_addr = policy_xml.find_all(name='destination-address')
 
-                addr_tuple = []
-                addr_tuple = get_addr_info(src_addr, from_zone)
-                result_dict[policy] = {'src_address': summarize_addr_info(addr_tuple)}
+                    addr_tuple = []
+                    addr_tuple = self.__get_addr_info(src_addr, from_zone)
+                    result_dict[policy] = {'src_address': self.__summarize_addr_info(addr_tuple)}
 
-                addr_tuple = []
-                addr_tuple = get_addr_info(dst_addr, to_zome)
-                result_dict[policy].update({'dst_address': summarize_addr_info(addr_tuple)})
+                    addr_tuple = []
+                    addr_tuple = self.__get_addr_info(dst_addr, to_zome)
+                    result_dict[policy].update({'dst_address': self.__summarize_addr_info(addr_tuple)})
+        logging.debug('The addresses summary from '+from_zone+' to '+to_zome+' result is ' + str(result_dict))
+        return result_dict
 
-        logging.debug('The addresses summary result is ' + str(result_dict))
+    @__check_config
+    def analyse_policies_address(self, policies=[], from_zone='untrust', to_zome='trust'):
+        """
+        Input: policy name list
+            Get the source and destination addresses related to a policy
+        Output: list(policy: {src_address:IPSet([]), dst_address:IPSet([]) })
+        """
+        result_dict = {}
+        for policy in policies:
+            for policy_temp in self.__configuration_xml.policies.find_all(text=policy):
+                if policy_temp is None:
+                    logging.warn('No such a policy: ' + policy + 'from ' + from_zone + ' to ' + to_zome)
+                    continue
+                policy_xml = policy_temp.parent.parent  # Get the policy xml.
+                if policy_xml.parent.find('from-zone-name').text == from_zone and policy_xml.parent.find(
+                        'to-zone-name').text == to_zome:
+                    src_addr = policy_xml.find_all(name='source-address')
+                    dst_addr = policy_xml.find_all(name='destination-address')
+
+                    addr_tuple = []
+                    addr_tuple = self.__get_addr_info(src_addr, from_zone)
+                    result_dict[policy] = {'src_address': self.__summarize_addr_info(addr_tuple)}
+
+                    addr_tuple = []
+                    addr_tuple = self.__get_addr_info(dst_addr, to_zome)
+                    result_dict[policy].update({'dst_address': self.__summarize_addr_info(addr_tuple)})
+        logging.debug('The addresses summary from '+from_zone+' to '+to_zome+' result is ' + str(result_dict))
         return result_dict
 
     @__check_config
@@ -272,13 +353,19 @@ class ConfigurationSoup(object):
 
         result_dict = {}
         for policy in policies:
-            policy_xml = self.__configuration_xml.policies.find(text=policy).parent.parent  # Get the policy xml.
-            if policy_xml.parent.find('from-zone-name').text == from_zone and policy_xml.parent.find(
-                    'to-zone-name').text == to_zone:
-                applications = policy_xml.find_all(name='application')
-                app_tuple = []   # tuple to store the application information.   
-                app_tuple = self.__get_application_info(applications)
-                result_dict[policy] = ConfigurationSoup.__summarize_application_info(app_tuple)
+            for policy_temp in self.__configuration_xml.policies.find_all(text=policy):
+                if policy_temp is None:
+                    logging.warn('No such a policy: ' + policy + 'from ' + from_zone + ' to ' + to_zone)
+                    continue
+                policy_xml = policy_temp.parent.parent  # Get the policy xml.
+                if policy_xml.parent.find('from-zone-name').text == from_zone and policy_xml.parent.find(
+                        'to-zone-name').text == to_zone:
+                    applications = policy_xml.find_all(name='application')
+                    # tuple to store the application information.
+                    app_tuple = []
+                    app_tuple = self.__get_application_info(applications)
+                    result_dict[policy] = self.__summarize_application_info(app_tuple)
+        logging.debug('The application summary from '+from_zone+' to '+to_zone+' result is ' + str(result_dict))
         return result_dict
 
     @__check_config
@@ -325,8 +412,7 @@ class ConfigurationSoup(object):
                     logging.info(app_xml.name + 'is not a application/application set')
 
 
-    @classmethod
-    def __summarize_application_info(cls, applications=[]):
+    def __summarize_application_info(self, applications=[]):
         """
         [input: <application>
                 <name>TCP-test</name>
@@ -349,8 +435,10 @@ class ConfigurationSoup(object):
         try:
             app_dict = {}
             for app in applications:
+                if not app.protocol: # don't have protocol
+                    continue
                 protocol = app.protocol.text
-                if protocol in ['tcp', 'udp', '0']:
+                if protocol in strategies.supported_protocol_list:
                     src_port_xml = app.find("source-port")
                     src_port = port_cal(src_port_xml.text) if src_port_xml is not None else ['any']
                     dst_port_xml = app.find("destination-port")
@@ -359,15 +447,60 @@ class ConfigurationSoup(object):
                     if protocol not in app_dict:
                         app_dict[protocol] = {'src-port': src_port, 'dst-port': dst_port}
                     else:
-                        app_dict[protocol]['src-port'].extend(src_port) # kill the duplicated numbers
-                        app_dict[protocol]['src-port'] = list(set(app_dict[protocol]['src-port']))
+                        app_dict[protocol]['src-port'].extend(src_port)
                         app_dict[protocol]['dst-port'].extend(dst_port)
-                        app_dict[protocol]['dst-port'] = list(set(app_dict[protocol]['dst-port']))
+                    app_dict[protocol]['src-port'] = list(set(app_dict[protocol]['src-port']))
+                    app_dict[protocol]['dst-port'] = list(set(app_dict[protocol]['dst-port']))
+                    app_dict[protocol]['src-port'].sort(key=lambda x:0 if x=='any' else x)
+                    app_dict[protocol]['dst-port'].sort(key=lambda x:0 if x=='any' else x)
             return app_dict
         except Exception as e:
-            logging.warn('The problem app is \n' + str(app))
+            logging.warn('The problem app is \n' + str(app)+'\n')
             return {}
 
+
+    def __get_addr_info(self, addrs=[], zone_name='untrust'):
+        """
+        Input: Address names list
+        A recursive method to get address from address-set
+        Output: A generator which return addresses belong to a policy
+        """
+        for addr in addrs:
+            ip = addr.text
+            if ip == 'any':
+                ip = '0.0.0.0/0'
+                yield ip
+            else:
+                try:
+                    security_zone = self.__configuration_xml.zones.find(name='name', text=zone_name).parent
+                    address_xml = security_zone.find(name='name', text=ip).parent
+                except AttributeError as e:
+                    logging.warn("cannot find the address :" + ip)
+                    return None
+                else:
+                    if address_xml.name == 'address':
+                        yield address_xml.find('ip-prefix').text
+                    elif address_xml.name == 'address-set':
+                        address_members = address_xml.find_all(name='address')
+                        member_list = []
+                        for member in address_members:
+                            member_list.append(member.find(name='name'))
+                        for address in self.__get_addr_info(member_list, zone_name):
+                            yield address
+                    else:
+                        logging.warn(address_xml.name + 'is not an address/address set')
+
+
+    @staticmethod
+    def __summarize_addr_info(addr_tuple):
+        """
+        Use the netaddr.IPSet lib to do the clear dupilcated work.
+        """
+        addresses = IPSet([])
+        if addr_tuple is not None:
+            for addr in addr_tuple:
+                addresses.add(addr)
+        return addresses
 
 if __name__ == '__main__':
     configuration = '''

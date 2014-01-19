@@ -1,6 +1,7 @@
 import logging
 import os
-from configurations_operator.policies_seeker_realtime import login_inform, PoliciesSeeker, parameters_tuple
+from configurations_operator.policies_seeker_realtime import PoliciesSeeker
+from configurations_operator.policies_seeker_structure import ParametersTuple, LoginInform
 
 __author__ = 'bazooka'
 import re
@@ -69,7 +70,7 @@ def start_to_seek(login_tuple):
             print("dst_zone = '%s', dst_ip = %s," %(dst_zone, dst_ip))
             print("application_set = %s \n" %str(application_set))
 
-            tuple = parameters_tuple(src_zone = src_zone, src_ip = src_ip, dst_zone = dst_zone, dst_ip = dst_ip,
+            tuple = ParametersTuple(src_zone = src_zone, src_ip = src_ip, dst_zone = dst_zone, dst_ip = dst_ip,
                                      application_set = application_set)
             if not valid_parameters(tuple):
                 print('''
@@ -111,7 +112,7 @@ you can input the policy parameters you want to integrate with into the box, ple
             exit(0)
         else:
             if ip_validate(host):
-                login_tuple = login_inform(host)
+                login_tuple = LoginInform(host)
                 start_to_seek(login_tuple)
             else:
                 print('\n\n Please input something like this "10.1.1.1"!! \n')
